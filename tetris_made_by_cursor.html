@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dark Theme Tetris</title>
+    <style>
+        body {
+            background-color: #1a1a1a;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            font-family: Arial, sans-serif;
+            color: #fff;
+        }
+        
+        #game-container {
+            text-align: center;
+        }
+
+        canvas {
+            border: 2px solid #333;
+            background-color: #000;
+        }
+
+        #score {
+            font-size: 24px;
+            margin: 20px 0;
+        }
+
+        #controls {
+            margin-top: 20px;
+            color: #888;
+        }
+    </style>
+</head>
+<body>
+    <div id="game-container">
+        <div id="score">Score: <span id="score-value">0</span></div>
+        <canvas id="tetris" width="300" height="600"></canvas>
+        <div id="controls">
+            ← → : Move | ↑ : Rotate | ↓ : Soft Drop | Space : Hard Drop
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('tetris');
+        const context = canvas.getContext('2d');
+        const scoreElement = document.getElementById('score-value');
+        
+        const BLOCK_SIZE = 30;
+        const COLS = 10;
+        const ROWS = 20;
+        
+        // Tetromino colors
+        const colors = [
+            null,
+            '#FF0D72', // I
+            '#0DC2FF', // J
+            '#0DFF72', // L
+            '#F538FF', // O
+            '#FF8E0D', // S
+            '#FFE138', // T
+            '#3877FF'  // Z
+        ];
+
+        // Tetromino shapes
+        const pieces = [
+            [[0,0,0,0], [1,1,1,1], [0,0,0,0], [0,0,0,0]], // I
+            [[2,0,0], [2,2,2], [0,0,0]], // J
+            [[0,0,3], [3,3,3], [0,0,0]], // L
+            [[4,4], [4,4]], // O
+            [[0,5,5], [5,5,0], [0,0,0]], // S
+            [[0,6,0], [6,6,6], [0,0,0]], // T
+            [[7,7,0], [0,7,7], [0,0,0]]  // Z
+        ];
+
+        let dropCounter = 0;
+        let dropInterval = 1000;
+        let score = 0;
+
+        const player = {
+            pos: {x: 0, y: 0},
+            matrix: null,
+            score: 0
+        };
+
+        const arena = createMatrix(COLS, ROWS);
+
+        // 전역 변수 추가
+        const clearingRows = new Set();
+        let clearAnimationFrame = null;
+        let clearAnimationOpacity = 1;
+
+        function createMatrix(w, h) {
+            const matrix = [];
+            while (h--) {
+                matrix.push(new Array(w).fill(0));
+            }
+            return matrix;
+        }
+
+        function collide(arena, player) {
+            const [m, o] = [player.matrix, player.pos];
+            for (let y = 0; y < m.length; ++y) {
+                for (let x = 0; x < m[y].length; ++x) {
+                    if (m[y][x] !== 0 &&
+                        (arena[y + o.y] &&
+                        arena[y + o.y][x + o.x]) !== 0) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        function merge(arena, player) {
+            player.matrix.forEach((row, y) => {
+                row.forEach((value, x) => {
+                    if (value !== 0) {
+                        arena[y + player.pos.y][x + player.pos.x] = value;
+                    }
+                });
+            });
+        }
+
+        function rotate(matrix, dir) {
+            for (let y = 0; y < matrix.length; ++y) {
+                for (let x = 0; x < y; ++x) {
+                    [
+                        matrix[x][y],
+                        matrix[y][x],
+                    ] = [
+                        matrix[y][x],
+                        matrix[x][y],
+                    ];
+                }
+            }
+            if (dir > 0) {
+                matrix.reverse();
+            } else {
+                matrix.forEach(row => row.reverse());
+            }
+        }
+
+        function playerDrop() {
+            player.pos.y++;
+            if (collide(arena, player)) {
+                player.pos.y--;
+                merge(arena, player);
+                playerReset();
+                arenaSweep();
+                updateScore();
+            }
+            dropCounter = 0;
+        }
+
+        function playerMove(dir) {
+            player.pos.x += dir;
+            if (collide(arena, player)) {
+                player.pos.x -= dir;
+            }
+        }
+
+        function playerReset() {
+            player.matrix = pieces[Math.floor(Math.random() * pieces.length)];
+            player.pos.y = 0;
+            player.pos.x = (arena[0].length / 2 | 0) -
+                          (player.matrix[0].length / 2 | 0);
+            if (collide(arena, player)) {
+                arena.forEach(row => row.fill(0));
+                player.score = 0;
+                updateScore();
+            }
+        }
+
+        function playerRotate(dir) {
+            const pos = player.pos.x;
+            let offset = 1;
+            rotate(player.matrix, dir);
+            while (collide(arena, player)) {
+                player.pos.x += offset;
+                offset = -(offset + (offset > 0 ? 1 : -1));
+                if (offset > player.matrix[0].length) {
+                    rotate(player.matrix, -dir);
+                    player.pos.x = pos;
+                    return;
+                }
+            }
+        }
+
+        function createPiece(type) {
+            switch(type) {
+                case 'I': return [[0,1,0,0],
+                                [0,1,0,0],
+                                [0,1,0,0],
+                                [0,1,0,0]];
+                case 'J': return [[0,2,0],
+                                [0,2,0],
+                                [2,2,0]];
+                case 'L': return [[0,3,0],
+                                [0,3,0],
+                                [0,3,3]];
+                case 'O': return [[4,4],
+                                [4,4]];
+                case 'S': return [[0,5,5],
+                                [5,5,0],
+                                [0,0,0]];
+                case 'T': return [[0,6,0],
+                                [6,6,6],
+                                [0,0,0]];
+                case 'Z': return [[7,7,0],
+                                [0,7,7],
+                                [0,0,0]];
+            }
+        }
+
+        function arenaSweep() {
+            let rowCount = 1;
+            const rowsToRemove = [];
+            
+            // 먼저 완성된 줄 찾기
+            outer: for (let y = arena.length - 1; y > 0; --y) {
+                for (let x = 0; x < arena[y].length; ++x) {
+                    if (arena[y][x] === 0) {
+                        continue outer;
+                    }
+                }
+                rowsToRemove.push(y);
+                clearingRows.add(y);
+            }
+
+            // 완성된 줄이 있다면 애니메이션 시작
+            if (rowsToRemove.length > 0) {
+                clearAnimationOpacity = 1;
+                startClearAnimation(rowsToRemove, rowCount);
+                return;
+            }
+        }
+
+        // 애니메이션 함수 추가
+        function startClearAnimation(rowsToRemove, rowCount) {
+            clearAnimationOpacity -= 0.05;
+            
+            if (clearAnimationOpacity > 0) {
+                // 다음 프레임 예약
+                clearAnimationFrame = requestAnimationFrame(() => {
+                    startClearAnimation(rowsToRemove, rowCount);
+                });
+            } else {
+                // 애니메이션 완료 후 줄 제거
+                rowsToRemove.forEach(y => {
+                    const row = arena.splice(y, 1)[0].fill(0);
+                    arena.unshift(row);
+                    player.score += rowCount * 100;
+                    rowCount *= 2;
+                });
+                
+                // 애니메이션 상태 초기화
+                clearingRows.clear();
+                clearAnimationOpacity = 1;
+                updateScore();
+            }
+        }
+
+        function draw() {
+            context.fillStyle = '#000';
+            context.fillRect(0, 0, canvas.width, canvas.height);
+
+            drawMatrix(arena, {x: 0, y: 0});
+            drawMatrix(player.matrix, player.pos);
+        }
+
+        function drawMatrix(matrix, offset) {
+            matrix.forEach((row, y) => {
+                row.forEach((value, x) => {
+                    if (value !== 0) {
+                        context.fillStyle = colors[value];
+                        
+                        // 사라지는 줄은 투명도 적용
+                        if (clearingRows.has(y + offset.y)) {
+                            context.globalAlpha = clearAnimationOpacity;
+                        }
+                        
+                        context.fillRect((x + offset.x) * BLOCK_SIZE,
+                                       (y + offset.y) * BLOCK_SIZE,
+                                       BLOCK_SIZE, BLOCK_SIZE);
+                               
+                        // 테두리 추가
+                        context.strokeStyle = '#333';
+                        context.strokeRect((x + offset.x) * BLOCK_SIZE,
+                                         (y + offset.y) * BLOCK_SIZE,
+                                         BLOCK_SIZE, BLOCK_SIZE);
+                                 
+                        // 투명도 초기화
+                        context.globalAlpha = 1;
+                    }
+                });
+            });
+        }
+
+        function updateScore() {
+            scoreElement.textContent = player.score;
+        }
+
+        let lastTime = 0;
+        function update(time = 0) {
+            const deltaTime = time - lastTime;
+            lastTime = time;
+
+            // 애니메이션 중이 아닐 때만 블록 떨어지도록
+            if (clearingRows.size === 0) {
+                dropCounter += deltaTime;
+                if (dropCounter > dropInterval) {
+                    playerDrop();
+                }
+            }
+
+            draw();
+            requestAnimationFrame(update);
+        }
+
+        document.addEventListener('keydown', event => {
+            if (event.keyCode === 37) {
+                playerMove(-1);
+            } else if (event.keyCode === 39) {
+                playerMove(1);
+            } else if (event.keyCode === 40) {
+                playerDrop();
+            } else if (event.keyCode === 38) {
+                playerRotate(1);
+            } else if (event.keyCode === 32) {
+                while (!collide(arena, player)) {
+                    player.pos.y++;
+                }
+                player.pos.y--;
+                merge(arena, player);
+                playerReset();
+                arenaSweep();
+                updateScore();
+            }
+
+            // P키를 누르면 스크린샷 캡처
+            if (event.key === 'p' || event.key === 'P') {
+                captureScreenshot();
+            }
+        });
+
+        playerReset();
+        updateScore();
+        update();
+
+        // 스크린샷 함수 추가
+        function captureScreenshot() {
+            // canvas의 현재 상태를 JPG 이미지로 변환
+            // 두 번째 파라미터는 이미지 품질을 나타냄 (0.0 ~ 1.0)
+            const dataURL = canvas.toDataURL('image/jpeg', 0.9);
+            
+            // 다운로드 링크 생성
+            const link = document.createElement('a');
+            link.download = `tetris-screenshot-${Date.now()}.jpg`;
+            link.href = dataURL;
+            
+            // 링크 클릭을 시뮬레이션하여 다운로드 시작
+            link.click();
+        }
+    </script>
+</body>
+</html>
